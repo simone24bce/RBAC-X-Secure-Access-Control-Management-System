@@ -10,59 +10,55 @@ const rbacXEngine = (requiredRole) => {
     jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
       if (err) return res.status(403).json({ message: "Invalid or Expired Token" });
 
-      // --- 1. SMART IP DETECTION (PRO-LEVEL) ---
-      // Prioritize X-Forwarded-For (for ngrok), then standard IP sources
+      // --- 1. IP DETECTION ---
       const rawIp = req.headers['x-forwarded-for']?.split(',')[0] || 
                     req.socket.remoteAddress || 
                     req.ip;
       
-      // Clean IPv6 garbage (removes the "::ffff:" prefix)
       const cleanIp = rawIp.replace(/^.*:/, '');
 
-      // --- DEMO LOGIC ---
-      // If localhost or internal network, we use Bhopal (103.15.254.1) for the demo.
-      // If it's a real public IP (from ngrok/mobile), we use the real cleanIp!
+     
       const isInternal = cleanIp === '1' || cleanIp === '127.0.0.1' || cleanIp.startsWith('192.168');
-      
-      // TIP: Change '103.15.254.1' to '8.8.8.8' here if you want to force a "High Risk" block manually
-      const ipToLookup = isInternal ? '103.15.254.1' : cleanIp;
+      const ipToLookup = isInternal ? '103.15.254.1' : cleanIp; 
 
       const geo = geoip.lookup(ipToLookup);
+      const detectedCity = geo ? geo.city : "Unknown";
       
-      // Define "Off-Campus" logic (Strictly Bhopal)
-      const isOffCampus = !geo || geo.city !== 'Bhopal'; 
+      // STRICT LOGIC: If not Bhopal, it's a risk.
+      const isOffCampus = detectedCity !== 'Bhopal'; 
 
-      // --- 2. AUTOMATIC DEVICE DETECTION ---
+      // --- 3. DEVICE FINGERPRINTING ---
       const userAgent = req.headers['user-agent'] || "";
       const isTrustedDevice = /Chrome|Safari|Firefox/i.test(userAgent);
 
-      // --- 3. RISK CALCULATION ---
+      // --- 4. NEW WINNING RISK SCORING ---
       let riskScore = 0;
-      if (isOffCampus) riskScore += 40;
-      if (!isTrustedDevice) riskScore += 30;
+      
+      if (isOffCampus) {
+        riskScore += 60; // Higher penalty for wrong city
+      }
+      if (!isTrustedDevice) {
+        riskScore += 20; // Penalty for unknown browsers
+      }
 
-      // Debugging: Keep an eye on your Window 2 terminal
-      console.log(`🛡️  Audit: User[${user.role}] | RealIP[${cleanIp}] | LookupIP[${ipToLookup}] | City[${geo ? geo.city : 'Unknown'}] | Risk[${riskScore}]`);
+      console.log(`🛡️ Audit: User[${user.role}] | City[${detectedCity}] | Risk[${riskScore}]`);
 
-      // --- 4. ENFORCEMENT ---
-      // Block if risk is high, unless the user is an Admin (Admins bypass for emergencies)
-      if (riskScore >= 70 && user.role !== 'Admin') {
+      // --- 5. ENFORCEMENT (The "Block" Logic) ---
+      // We set the threshold to 50. 
+      if (riskScore >= 50 && user.role !== 'Admin') {
         return res.status(403).json({ 
           message: "High Security Risk Detected", 
           details: {
             score: riskScore,
-            location: geo ? geo.city : "Unknown",
-            device: isTrustedDevice ? "Trusted Browser" : "Unknown Device"
+            location: detectedCity,
+            reason: "Unsafe Geographic Zone"
           }
         });
       }
 
-      // Standard Role Hierarchy Check
+      // Standard Role Check
       const roles = ['Guest', 'Employee', 'Manager', 'Admin'];
-      const userRoleLevel = roles.indexOf(user.role);
-      const requiredRoleLevel = roles.indexOf(requiredRole);
-
-      if (userRoleLevel < requiredRoleLevel && user.role !== 'Admin') {
+      if (roles.indexOf(user.role) < roles.indexOf(requiredRole) && user.role !== 'Admin') {
         return res.status(403).json({ message: "Permission Denied: Insufficient Role" });
       }
 
